@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const app = express();
+let appReady = Promise.resolve();
 const port = Number(process.env.PORT || 3000);
 const secret = process.env.SESSION_SECRET || 'local-demo-secret-change-before-deploying';
 const isProduction = process.env.NODE_ENV === 'production';
@@ -47,108 +48,34 @@ function createEmployee(i) {
   return { id: `emp-${String(i + 1).padStart(3, '0')}`, name, title: ['Senior Software Engineer', 'Product Engineer', 'Platform Developer', 'Full-stack Engineer'][i % 4], department: ['Engineering', 'Product', 'Data', 'Platform'][i % 4], location: ['New York', 'London', 'Toronto', 'Singapore'][i % 4], email: i === 0 ? 'employee@skillgraph.test' : `employee${i + 1}@skillgraph.test`, experienceYears: 3 + (i % 10), skills, projects, certifications: [{ name: i % 2 === 0 ? 'AWS Cloud Practitioner' : 'Secure Software Foundations', year: 2025 }].concat(special < 6 ? [{ name: 'React Developer Certificate', year: 2024 }] : []), workload, availability: workload >= 85 ? 'At capacity' : workload <= 50 ? 'Available' : 'Limited', userId: i === 0 ? 'demo-employee' : null, evidence: 'Skills verified through project delivery and manager review.' };
 }
 function initialState() {
-  const employees = Array.from({ length: 100 }, (_, i) => createEmployee(i));
-  return { users: [userRecord('demo-hr', 'Morgan Lee', 'hr@skillgraph.test', 'DemoPass!23', 'hr'), userRecord('demo-employee', 'Priya Shah', 'employee@skillgraph.test', 'DemoPass!23', 'employee')], employees, course, notifications: [], evidenceTasks: [], invitations: [], auditLog: [], companySettings: { evidenceDueDays: process.env.EVIDENCE_DUE_DAYS ? Number(process.env.EVIDENCE_DUE_DAYS) : null, allowedEmailDomains: [...allowedEmailDomains] }, openings: [{ id: 'opening-1', title: 'FinTech Payment Application', domain: 'FinTech', duration: '3 months', description: 'Build secure payment workflows for our next-generation banking platform.', requirements: [{ name: 'React', level: 'Advanced' }, { name: 'Node.js', level: 'Advanced' }, { name: 'SQL', level: 'Intermediate' }], published: true, createdAt: new Date().toISOString() }, { id: 'opening-2', title: 'Customer Data Insights', domain: 'E-commerce', duration: '6 weeks', description: 'Shape customer analytics experiences for our commerce teams.', requirements: [{ name: 'React', level: 'Intermediate' }, { name: 'SQL', level: 'Intermediate' }], published: true, createdAt: new Date().toISOString() }], interests: [], learning: {}, evaluations: {}, seedVersion: 4, initialized: true };
+  const users = [];
+  const employees = isProduction ? [] : Array.from({ length: 100 }, (_, i) => createEmployee(i));
+  const openings = isProduction ? [] : [
+    { id: 'opening-1', title: 'FinTech Payment Application', domain: 'FinTech', duration: '3 months', description: 'Build secure payment workflows for our next-generation banking platform.', requirements: [{ name: 'React', level: 'Advanced' }, { name: 'Node.js', level: 'Advanced' }, { name: 'SQL', level: 'Intermediate' }], published: true, createdAt: new Date().toISOString() },
+    { id: 'opening-2', title: 'Customer Data Insights', domain: 'E-commerce', duration: '6 weeks', description: 'Shape customer analytics experiences for our commerce teams.', requirements: [{ name: 'React', level: 'Intermediate' }, { name: 'SQL', level: 'Intermediate' }], published: true, createdAt: new Date().toISOString() }
+  ];
+  if (isProduction) {
+    const email = String(process.env.BOOTSTRAP_HR_EMAIL || '').trim().toLowerCase();
+    const password = process.env.BOOTSTRAP_HR_PASSWORD || '';
+    if (!/^\S+@\S+\.\S+$/.test(email) || password.length < 14) throw new Error('A new production database requires BOOTSTRAP_HR_EMAIL and a BOOTSTRAP_HR_PASSWORD of at least 14 characters.');
+    users.push({ ...userRecord('bootstrap-hr', 'Workspace Administrator', email, password, 'hr'), verified: true });
+  } else {
+    users.push(userRecord('demo-hr', 'Morgan Lee', 'hr@skillgraph.test', 'DemoPass!23', 'hr'), userRecord('demo-employee', 'Priya Shah', 'employee@skillgraph.test', 'DemoPass!23', 'employee'));
+  }
+  return { users, employees, course, notifications: [], evidenceTasks: [], invitations: [], auditLog: [], companySettings: { evidenceDueDays: process.env.EVIDENCE_DUE_DAYS ? Number(process.env.EVIDENCE_DUE_DAYS) : null, allowedEmailDomains: [...allowedEmailDomains] }, openings, interests: [], learning: {}, evaluations: {}, seedVersion: 4, initialized: true };
 }
 let state;
-let mysqlPool = null;
-
-async function syncRelationalSnapshot(connection) {
-  const insert = async (table, columns, rows) => {
-    for (let offset = 0; offset < rows.length; offset += 200) {
-      const batch = rows.slice(offset, offset + 200);
-      const rowPlaceholders = `(${columns.map(() => '?').join(',')})`;
-      const placeholders = batch.map(() => rowPlaceholders).join(',');
-      await connection.query(`INSERT INTO ${table} (${columns.join(',')}) VALUES ${placeholders}`, batch.flat());
-    }
-  };
-  const tables = ['course_module_completions', 'assessment_attempts', 'project_evaluations', 'upskilling_paths', 'skill_gaps', 'required_project_skills', 'project_interests', 'employee_certifications', 'employee_projects', 'workload', 'employee_course_progress', 'assessment_questions', 'assessments', 'learning_resources', 'course_modules', 'suggested_projects', 'internal_project_openings', 'project_skills', 'certifications', 'projects', 'employee_skills', 'skill_synonyms', 'skills', 'employees', 'users', 'courses'];
-  for (const table of tables) await connection.query(`DELETE FROM ${table}`);
-
-  await insert('users', ['id', 'name', 'email', 'password_hash', 'role'], state.users.map((user) => [user.id, user.name, user.email, `${user.salt}:${user.hash}`, user.role]));
-  await insert('employees', ['id', 'user_id', 'title', 'department', 'location', 'experience_years'], state.employees.map((person) => [person.id, person.userId, person.title, person.department, person.location, person.experienceYears]));
-
-  const skillNames = new Set([...skillsCatalog, ...state.employees.flatMap((person) => person.skills.map((skill) => skill.name)), ...state.openings.flatMap((opening) => opening.requirements.map((skill) => skill.name))]);
-  const skillRows = [...skillNames].map((name) => [name, ['FinTech', 'Healthcare', 'E-commerce', 'Payments'].includes(name) ? 'Domain' : ['Leadership', 'Communication', 'Project Management'].includes(name) ? 'Professional' : 'Technical']);
-  await insert('skills', ['name', 'category'], skillRows);
-  const [skillRecords] = await connection.query('SELECT id, name FROM skills');
-  const skillIds = new Map(skillRecords.map((skill) => [skill.name, skill.id]));
-  const skillAliases = { fintech: 'FinTech', healthcare: 'Healthcare', 'e-commerce': 'E-commerce', 'machine learning': 'Machine Learning', 'spring boot': 'Spring Boot', sql: 'SQL', react: 'React', 'node.js': 'Node.js', typescript: 'TypeScript', aws: 'AWS' };
-  const synonymRows = [];
-  for (const [name, terms] of Object.entries(synonyms)) for (const term of terms) {
-    const skillName = skillAliases[name] || name;
-    if (skillIds.has(skillName)) synonymRows.push([skillIds.get(skillName), term]);
-  }
-  await insert('skill_synonyms', ['skill_id', 'synonym'], synonymRows);
-  await insert('employee_skills', ['employee_id', 'skill_id', 'proficiency', 'years_experience', 'evidence'], state.employees.flatMap((person) => person.skills.filter((skill) => skill.level !== 'Missing').map((skill) => [person.id, skillIds.get(skill.name), skill.level, skill.years, person.evidence])));
-
-  const projects = [];
-  const employeeProjectRows = [];
-  const projectSkillRows = [];
-  state.employees.forEach((person) => person.projects.forEach((project) => {
-    projects.push([person.id, project.name, project.domain, '', project.year]);
-    const projectIndex = projects.length;
-    employeeProjectRows.push([person.id, projectIndex, 'Contributor']);
-    for (const name of project.technologies) if (skillIds.has(name)) projectSkillRows.push([projectIndex, skillIds.get(name)]);
-  }));
-  await insert('projects', ['name', 'domain', 'description', 'started_year'], projects.map((row) => row.slice(1)));
-  const [projectRecords] = await connection.query('SELECT id FROM projects ORDER BY id');
-  const projectIds = projectRecords.map((project) => project.id);
-  await insert('employee_projects', ['employee_id', 'project_id', 'contribution'], employeeProjectRows.map(([employeeId, index, contribution]) => [employeeId, projectIds[index - 1], contribution]));
-  await insert('project_skills', ['project_id', 'skill_id'], [...new Map(projectSkillRows.map(([index, skillId]) => [`${projectIds[index - 1]}:${skillId}`, [projectIds[index - 1], skillId]])).values()]);
-
-  const certificationNames = [...new Set(state.employees.flatMap((person) => person.certifications.map((cert) => cert.name)))];
-  await insert('certifications', ['name', 'provider'], certificationNames.map((name) => [name, 'skillGraph Partner Network']));
-  const [certificationRecords] = await connection.query('SELECT id, name FROM certifications');
-  const certificationIds = new Map(certificationRecords.map((cert) => [cert.name, cert.id]));
-  await insert('employee_certifications', ['employee_id', 'certification_id', 'earned_at'], state.employees.flatMap((person) => person.certifications.map((cert) => [person.id, certificationIds.get(cert.name), `${cert.year}-01-01`])));
-  await insert('workload', ['employee_id', 'workload_percent'], state.employees.map((person) => [person.id, person.workload]));
-
-  await insert('internal_project_openings', ['id', 'title', 'domain', 'duration', 'description', 'published', 'created_by'], state.openings.map((opening) => [opening.id, opening.title, opening.domain, opening.duration, opening.description, opening.published, state.users.find((user) => user.role === 'hr')?.id || null]));
-  await insert('required_project_skills', ['opening_id', 'skill_id', 'proficiency'], state.openings.flatMap((opening) => opening.requirements.map((skill) => [opening.id, skillIds.get(skill.name), skill.level])));
-  await insert('project_interests', ['opening_id', 'employee_id', 'status', 'created_at'], state.interests.map((interest) => [interest.openingId, interest.employeeId, interest.status, new Date(interest.createdAt)]));
-
-  await insert('courses', ['id', 'title', 'provider', 'estimated_hours', 'certification_available'], [[state.course.id, state.course.title, state.course.provider, state.course.durationHours, state.course.certification]]);
-  await insert('course_modules', ['course_id', 'title', 'position', 'estimated_hours'], state.course.modules.map((title, index) => [state.course.id, title, index + 1, [4, 6, 7, 6, 7][index]]));
-  await insert('learning_resources', ['course_id', 'title', 'resource_type', 'url'], state.course.resources.map((resource) => [state.course.id, resource.title, resource.type, resource.url]));
-  const [moduleRecords] = await connection.query('SELECT id, position FROM course_modules WHERE course_id = ?', [state.course.id]);
-  const moduleIds = new Map(moduleRecords.map((module) => [module.position - 1, module.id]));
-  const userEmployees = new Map(state.employees.filter((person) => person.userId).map((person) => [person.userId, person]));
-  const learningEntries = Object.entries(state.learning).filter(([userId]) => userEmployees.has(userId));
-  await insert('employee_course_progress', ['employee_id', 'course_id', 'actual_seconds', 'session_started_at', 'certified'], learningEntries.map(([userId, learning]) => [userEmployees.get(userId).id, state.course.id, Math.floor(learning.accumulatedSeconds), learning.sessionStartedAt ? new Date(learning.sessionStartedAt) : null, learning.certified]));
-  await insert('course_module_completions', ['employee_id', 'module_id'], learningEntries.flatMap(([userId, learning]) => learning.completed.map((index) => [userEmployees.get(userId).id, moduleIds.get(index)])));
-  await insert('assessments', ['course_id', 'title'], [[state.course.id, `${state.course.title} knowledge check`]]);
-  const [assessmentRecords] = await connection.query('SELECT id FROM assessments WHERE course_id = ?', [state.course.id]);
-  const assessmentId = assessmentRecords[0].id;
-  await insert('assessment_questions', ['assessment_id', 'prompt', 'options_json', 'answer_index'], state.course.questions.map((question) => [assessmentId, question.prompt, JSON.stringify(question.options), question.answer]));
-  await insert('assessment_attempts', ['assessment_id', 'employee_id', 'score', 'answers_json'], learningEntries.filter(([, learning]) => learning.assessmentScore !== null).map(([userId, learning]) => [assessmentId, userEmployees.get(userId).id, learning.assessmentScore, JSON.stringify({ recordedScore: learning.assessmentScore })]));
-  await insert('suggested_projects', ['course_id', 'title', 'description'], [[state.course.id, state.course.project, state.course.project]]);
-  const [suggestedProjects] = await connection.query('SELECT id FROM suggested_projects WHERE course_id = ?', [state.course.id]);
-  const nodeSkillId = skillIds.get('Node.js');
-  const nodeSkillRows = state.employees.map((person) => ({ person, skill: person.skills.find((skill) => skill.name === 'Node.js') })).filter(({ skill }) => skill && levels.indexOf(skill.level) < levels.indexOf('Advanced'));
-  await insert('skill_gaps', ['employee_id', 'skill_id', 'current_proficiency', 'target_proficiency', 'status'], nodeSkillRows.map(({ person, skill }) => [person.id, nodeSkillId, skill.level === 'Missing' ? null : skill.level, 'Advanced', person.userId && state.evaluations[person.userId] ? 'Demonstrated' : 'Open']));
-  await insert('upskilling_paths', ['employee_id', 'skill_id', 'course_id', 'status'], nodeSkillRows.map(({ person }) => [person.id, nodeSkillId, state.course.id, person.userId && state.evaluations[person.userId] ? 'Completed' : 'Suggested']));
-  await insert('project_evaluations', ['project_id', 'employee_id', 'score', 'evidence_json'], learningEntries.filter(([, learning]) => learning.projectScore !== null).map(([userId, learning]) => [suggestedProjects[0].id, userEmployees.get(userId).id, learning.projectScore, JSON.stringify({ rubricPoints: learning.projectScore, selfReported: true })]));
-}
+let supabase = null;
 
 let persistQueue = Promise.resolve();
 function persist() {
   persistQueue = persistQueue.then(async () => {
-  const serialized = JSON.stringify(state);
-  if (mysqlPool) {
-    const connection = await mysqlPool.getConnection();
-    try {
-      await connection.beginTransaction();
-      await connection.execute('INSERT INTO app_state (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload)', [serialized]);
-      await syncRelationalSnapshot(connection);
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally { connection.release(); }
+  if (supabase) {
+    const { error } = await supabase.from('app_state').upsert({ id: 1, payload: state }, { onConflict: 'id' });
+    if (error) throw new Error(`Could not persist Supabase application state: ${error.message}`);
   } else {
     fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-    fs.writeFileSync(dataFile, serialized);
+    fs.writeFileSync(dataFile, JSON.stringify(state));
   }
   });
   return persistQueue;
@@ -184,13 +111,19 @@ async function sendConfiguredEmail(to, subject, html) {
   if (!response.ok) throw new Error(`Email provider returned ${response.status}`);
   return { sent: true };
 }
+function publicBaseUrl() { return (process.env.APP_BASE_URL || `http://localhost:${port}`).replace(/\/+$/, ''); }
 async function initialize() {
-  if (process.env.MYSQL_URL) {
-    mysqlPool = require('mysql2/promise').createPool(process.env.MYSQL_URL);
-    await mysqlPool.query('CREATE TABLE IF NOT EXISTS app_state (id TINYINT PRIMARY KEY, payload JSON NOT NULL)');
-    const [rows] = await mysqlPool.query('SELECT payload FROM app_state WHERE id = 1');
-    state = rows.length ? (typeof rows[0].payload === 'string' ? JSON.parse(rows[0].payload) : rows[0].payload) : initialState();
-    if (!rows.length) await persist();
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (process.env.VERCEL && (!supabaseUrl || !supabaseServiceKey)) throw new Error('Vercel deployments require SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY; serverless filesystem storage is not persistent.');
+  if (Boolean(supabaseUrl) !== Boolean(supabaseServiceKey)) throw new Error('Configure both SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to use Supabase.');
+  if (supabaseUrl && supabaseServiceKey) {
+    const { createClient } = require('@supabase/supabase-js');
+    supabase = createClient(supabaseUrl, supabaseServiceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+    const { data, error } = await supabase.from('app_state').select('payload').eq('id', 1).maybeSingle();
+    if (error) throw new Error(`Could not read Supabase application state: ${error.message}. Run database/supabase.sql and check the service-role key.`);
+    state = data ? data.payload : initialState();
+    if (!data) await persist();
   } else {
     try { state = JSON.parse(fs.readFileSync(dataFile, 'utf8')); } catch { state = initialState(); await persist(); }
   }
@@ -314,6 +247,9 @@ function matchEmployee(person, parsed) {
 }
 function safeEmployee(person) { const { userId, ...safe } = person; return safe; }
 
+app.use((req, res, next) => {
+  appReady.then(next).catch(() => res.status(503).json({ error: 'Application storage is unavailable.' }));
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '16kb' }));
 app.use((req, res, next) => {
@@ -354,6 +290,7 @@ app.post('/api/register', authRateLimit, async (req, res) => {
   const domain = normalizedEmail.split('@')[1] || '';
   if (!name?.trim() || !/^\S+@\S+\.\S+$/.test(normalizedEmail) || !password || password.length < 8 || password !== confirmPassword) return res.status(400).json({ error: 'Enter a name, valid work email, matching password (8+ characters).' });
   if (!allowedEmailDomains.has(domain)) return res.status(403).json({ error: `This email domain is not approved for registration. Approved domains: ${[...allowedEmailDomains].join(', ') || 'none configured'}.` });
+  if (isProduction && (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM || !process.env.APP_BASE_URL)) return res.status(503).json({ error: 'Configure RESEND_API_KEY, EMAIL_FROM, and APP_BASE_URL before enabling production registration.' });
   if (state.users.some((user) => user.email.toLowerCase() === normalizedEmail)) return res.status(409).json({ error: 'An account with that email already exists.' });
   // Public registration is employee-only. HR access must be provisioned by an authorized administrator.
   const userId = crypto.randomUUID();
@@ -361,10 +298,20 @@ app.post('/api/register', authRateLimit, async (req, res) => {
   const user = { ...userRecord(userId, name.trim(), normalizedEmail, password, 'employee'), verified: false, verificationTokenHash: crypto.createHash('sha256').update(verificationToken).digest('hex'), verificationExpiresAt: Date.now() + 30 * 60 * 1000 };
   state.users.push(user);
   await persist();
-  const baseUrl = process.env.APP_BASE_URL || `http://localhost:${port}`;
   const response = { ok: true, requiresVerification: true, message: 'Account created. Verify your email before signing in.' };
-  // Local demo has no email provider, so expose a short-lived verification link only outside production.
-  if (!isProduction) response.developmentVerificationUrl = `${baseUrl}/api/verify-email?token=${encodeURIComponent(verificationToken)}`;
+  if (isProduction) {
+    const verificationUrl = `${publicBaseUrl()}/api/verify-email?token=${encodeURIComponent(verificationToken)}`;
+    try {
+      const emailResult = await sendConfiguredEmail(user.email, 'Verify your TalentGraph account', `<p>Hello ${user.name.replace(/[&<>\"']/g, '')},</p><p>Verify your work email to activate your TalentGraph account:</p><p><a href="${verificationUrl}">Verify email</a></p><p>This link expires in 30 minutes.</p>`);
+      if (!emailResult.sent) throw new Error(emailResult.reason);
+    } catch {
+      state.users = state.users.filter((entry) => entry.id !== user.id);
+      await persist();
+      return res.status(502).json({ error: 'Verification email could not be delivered. Check provider configuration and retry.' });
+    }
+  } else {
+    response.developmentVerificationUrl = `${publicBaseUrl()}/api/verify-email?token=${encodeURIComponent(verificationToken)}`;
+  }
   res.status(201).json(response);
 });
 app.get('/api/verify-email', async (req, res) => {
@@ -385,16 +332,16 @@ app.post('/api/login', authRateLimit, async (req, res) => {
   const user = state.users.find((entry) => entry.email.toLowerCase() === String(email || '').toLowerCase());
   if (!user || !crypto.timingSafeEqual(Buffer.from(crypto.scryptSync(password || '', user.salt, 64).toString('hex')), Buffer.from(user.hash))) return res.status(401).json({ error: 'Email or password is incorrect.' });
   if (user.verified === false) return res.status(403).json({ error: 'Please verify your email before signing in.' });
-  res.cookie('session', tokenFor(user), { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 12 * 60 * 60 * 1000 });
+  res.cookie('session', tokenFor(user), { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 12 * 60 * 60 * 1000 });
   res.json({ user: publicUser(user) });
 });
 app.post('/api/logout', (req, res) => { res.clearCookie('session', { httpOnly: true, sameSite: 'lax' }); res.json({ ok: true }); });
 app.get('/api/dashboard', auth(), (req, res) => {
   const person = employeeFor(req.user);
-  if (req.user.role === 'hr') return res.json({ user: publicUser(req.user), employees: state.employees.slice(0, 8).map(safeEmployee), employeeCount: state.employees.length, openings: state.openings.filter((opening) => opening.published), interests: state.interests.map((interest) => ({ ...interest, employee: safeEmployee(state.employees.find((entry) => entry.id === interest.employeeId) || {}) })), mode: mysqlPool ? 'mysql' : 'local' });
+  if (req.user.role === 'hr') return res.json({ user: publicUser(req.user), employees: state.employees.slice(0, 8).map(safeEmployee), employeeCount: state.employees.length, openings: state.openings.filter((opening) => opening.published), interests: state.interests.map((interest) => ({ ...interest, employee: safeEmployee(state.employees.find((entry) => entry.id === interest.employeeId) || {}) })), mode: supabase ? 'supabase' : 'local' });
   const learning = learningFor(req.user);
   const seconds = learning.accumulatedSeconds + (learning.sessionStartedAt ? Math.max(0, (Date.now() - learning.sessionStartedAt) / 1000) : 0);
-  res.json({ user: publicUser(req.user), employee: person ? safeEmployee(person) : null, course: state.course, learning: { ...learning, timeSpentHours: seconds / 3600, remainingHours: Math.max(0, state.course.durationHours - seconds / 3600), progress: Math.round(learning.completed.length / state.course.modules.length * 100), achievement: state.evaluations[req.user.id] || null }, openings: state.openings.filter((opening) => opening.published), interests: state.interests.filter((interest) => interest.employeeId === person?.id), mode: mysqlPool ? 'mysql' : 'local' });
+  res.json({ user: publicUser(req.user), employee: person ? safeEmployee(person) : null, course: state.course, learning: { ...learning, timeSpentHours: seconds / 3600, remainingHours: Math.max(0, state.course.durationHours - seconds / 3600), progress: Math.round(learning.completed.length / state.course.modules.length * 100), achievement: state.evaluations[req.user.id] || null }, openings: state.openings.filter((opening) => opening.published), interests: state.interests.filter((interest) => interest.employeeId === person?.id), mode: supabase ? 'supabase' : 'local' });
 });
 app.post('/api/hr/search', auth('hr'), (req, res) => {
   const parsed = queryRequirements(req.body?.query);
@@ -584,13 +531,13 @@ app.post('/api/hr/invitations', auth('hr'), async (req, res) => {
   if (!name || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Enter a name and valid company email.' });
   if (!allowedEmailDomains.has(email.split('@')[1])) return res.status(403).json({ error: 'Email domain is not approved.' });
   if (state.users.some((u) => u.email.toLowerCase() === email) || state.invitations.some((i) => i.email === email && !i.acceptedAt && !i.revokedAt && new Date(i.expiresAt).getTime() > Date.now())) return res.status(409).json({ error: 'An account or active invitation already exists for this email.' });
-  if (isProduction && (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM)) return res.status(503).json({ error: 'Configure RESEND_API_KEY and EMAIL_FROM before creating production invitations.' });
+  if (isProduction && (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM || !process.env.APP_BASE_URL)) return res.status(503).json({ error: 'Configure RESEND_API_KEY, EMAIL_FROM, and APP_BASE_URL before creating production invitations.' });
   const rawToken = crypto.randomBytes(32).toString('base64url'); const invite = { id: `inv-${crypto.randomUUID()}`, name, email, tokenHash: crypto.createHash('sha256').update(rawToken).digest('hex'), invitedBy: req.user.id, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 72 * 3600000).toISOString(), acceptedAt: null, revokedAt: null };
   state.invitations.unshift(invite); addAudit(req.user, 'invitation_created', 'invitation', invite.id, { email });
   let emailResult = { sent: false, reason: 'Email provider is not configured; invitation is available to HR in local mode.' };
-  try { emailResult = await sendConfiguredEmail(email, 'Your TalentGraph employee invitation', `<p>Hello ${name.replace(/[&<>\"']/g, '')},</p><p>You have been invited to join TalentGraph. Use this one-time invitation link:</p><p><a href="${(process.env.APP_BASE_URL || `http://localhost:${port}`).replace(/&/g, '&amp;')}/invite?token=${rawToken}">Accept invitation</a></p><p>This link expires in 72 hours.</p>`); } catch (error) { emailResult = { sent: false, reason: 'Email delivery failed; retry after checking provider configuration.' }; }
+  try { emailResult = await sendConfiguredEmail(email, 'Your TalentGraph employee invitation', `<p>Hello ${name.replace(/[&<>\"']/g, '')},</p><p>You have been invited to join TalentGraph. Use this one-time invitation link:</p><p><a href="${publicBaseUrl().replace(/&/g, '&amp;')}/invite?token=${rawToken}">Accept invitation</a></p><p>This link expires in 72 hours.</p>`); } catch (error) { emailResult = { sent: false, reason: 'Email delivery failed; retry after checking provider configuration.' }; }
   if (isProduction && !emailResult.sent) { invite.revokedAt = new Date().toISOString(); await persist(); return res.status(502).json({ error: 'Invitation email could not be delivered. Check provider configuration and retry.' }); }
-  await persist(); res.status(201).json({ invitation: { id: invite.id, email, name, expiresAt: invite.expiresAt, emailSent: emailResult.sent, emailMessage: emailResult.reason, ...(!isProduction ? { developmentAcceptanceUrl: `${process.env.APP_BASE_URL || `http://localhost:${port}`}/api/invitations/accept?token=${encodeURIComponent(rawToken)}` } : {}) } });
+  await persist(); res.status(201).json({ invitation: { id: invite.id, email, name, expiresAt: invite.expiresAt, emailSent: emailResult.sent, emailMessage: emailResult.reason, ...(!isProduction ? { developmentAcceptanceUrl: `${publicBaseUrl()}/api/invitations/accept?token=${encodeURIComponent(rawToken)}` } : {}) } });
 });
 app.post('/api/hr/invitations/:id/revoke', auth('hr'), async (req, res) => {
   const invite = state.invitations.find((i) => i.id === req.params.id && !i.acceptedAt);
@@ -642,21 +589,23 @@ async function processEvidenceReminders() {
   }
   if (changed) await persist();
 }
-initialize().then(() => {
+app.get('/api/internal/reminders', async (req, res) => {
+  if (!process.env.CRON_SECRET || req.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'Unauthorized.' });
+  await processEvidenceReminders();
+  res.json({ ok: true });
+});
+
+const initialization = initialize().then(() => {
+  if (process.env.VERCEL) return;
   processEvidenceReminders().catch((error) => console.error('Reminder processing failed:', error.message));
   const reminderTimer = setInterval(() => processEvidenceReminders().catch((error) => console.error('Reminder processing failed:', error.message)), 60 * 60 * 1000);
- if (reminderTimer.unref) reminderTimer.unref();
-
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
-  app.listen(port, () =>
-    console.log(
-      `Skill Graph running at http://localhost:${port} (${mysqlPool ? 'MySQL' : 'local demo'} mode)`
-    )
-  );
-}
+  if (reminderTimer.unref) reminderTimer.unref();
+  app.listen(port, () => console.log(`Skill Graph running at http://localhost:${port} (${supabase ? 'Supabase' : 'local demo'} mode)`));
 }).catch((error) => {
   console.error('Could not initialize application storage:', error.message);
-  process.exitCode = 1;
+  if (!process.env.VERCEL) process.exitCode = 1;
+  throw error;
 });
+appReady = initialization;
+initialization.catch(() => {});
+module.exports = app;

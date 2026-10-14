@@ -1,6 +1,6 @@
 # Dynamic Skill Graph & Internal Talent Marketplace
 
-A full-stack internal mobility demo built with HTML, CSS, JavaScript, Node.js, Express and MySQL. Fictional employee profiles connect proficiency, projects, certifications, domain experience and workload to explainable candidate matches and personalized learning.
+A full-stack internal mobility demo built with HTML, CSS, JavaScript, Node.js, Express and Supabase. Fictional employee profiles connect proficiency, projects, certifications, domain experience and workload to explainable candidate matches and personalized learning.
 
 ## Run locally
 
@@ -18,23 +18,20 @@ Demo accounts (both use `DemoPass!23`):
 
 The first start generates up to 100 fictional sample employee profiles and persists changes to `data/store.json`. Existing account-linked employee profiles are retained separately from the 100 unlinked sample profiles. Local demo mode needs no database server.
 
-## MySQL
+## Supabase
 
-Install MySQL 8 and create the relational schema before starting the application. From a terminal with the MySQL client available, import `database/schema.sql`:
-
-```text
-mysql -u root -p < database/schema.sql
-```
-
-Set the connection URL and a private session secret before running the server:
+Create a Supabase project, then run `database/supabase.sql` in its SQL Editor. Configure the project URL and server-only service-role key before starting the app:
 
 ```powershell
-$env:MYSQL_URL = "mysql://user:password@localhost:3306/skillgraph_talent"
+$env:SUPABASE_URL = "https://your-project.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "your-server-only-service-role-key"
 $env:SESSION_SECRET = "replace-with-a-long-random-secret"
 npm start
 ```
 
-MySQL mode stores the current application state in `app_state` and transactionally rebuilds its normalized relational snapshot on each change. The snapshot populates the users, employees, skills and synonyms, projects, certifications, workload, openings, interests, courses, learning progress, assessments, evaluations, skill gaps and upskilling-path tables. Import the schema first; MySQL is not silently replaced by local-file storage when a database connection is configured.
+Supabase mode stores the complete application state as JSON in the `public.app_state` table. Row-level security is enabled and access is revoked from `anon` and `authenticated`; only the backend service-role key can read or change this row. Never expose `SUPABASE_SERVICE_ROLE_KEY` in frontend code or commit it. This project currently uses Supabase as durable snapshot storage, not as a normalized relational model for each feature.
+
+Existing MySQL `app_state` data and local `data/store.json` data are not migrated automatically. Export the current JSON payload and import it into `public.app_state` before switching a live deployment; otherwise, Supabase initializes a new workspace and bootstrap HR account.
 
 ## Walkthrough
 
@@ -58,13 +55,43 @@ $env:APP_BASE_URL = "https://your-deployment.example"
 
 For production, also set `NODE_ENV=production`, a random `SESSION_SECRET` of at least 32 characters, and `COMPANY_EMAIL_DOMAINS` (comma-separated domains). Production startup intentionally fails if a strong session secret is missing. Public registration remains employee-only and requires email verification; HR accounts are not created by public signup.
 
+## Deploy to Vercel
+
+Vercel auto-detects the root `server.js` Express app and serves files under `public/` from its CDN. `vercel.json` configures the daily reminder job. Vercel deployments must use Supabase; the local `data/store.json` fallback is intentionally disabled because Vercel function filesystems are not durable.
+
+1. Create a Supabase project and run `database/supabase.sql` in its SQL Editor.
+2. Import this GitHub repository into Vercel. The project root is the repository root; no frontend build command is needed.
+3. Add the environment variables below in Vercel Project Settings. Set them for Production, and use separate database credentials and secrets for Preview if you enable preview deployments.
+4. Deploy, then sign in using the bootstrap HR account and confirm `/api/session`, signup email verification, and invitation email delivery.
+
+Required environment variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `SUPABASE_URL` | Supabase project URL from **Project Settings → API**. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only service-role key from **Project Settings → API**. Never expose it to the browser. |
+| `SESSION_SECRET` | Random secret, at least 32 characters. |
+| `COMPANY_EMAIL_DOMAINS` | Comma-separated allowed registration/invitation domains. |
+| `BOOTSTRAP_HR_EMAIL` | Initial verified HR account, used only when `app_state` is first created. |
+| `BOOTSTRAP_HR_PASSWORD` | Initial HR password, at least 14 characters; remove it after the first successful database initialization. |
+| `RESEND_API_KEY` | Resend API key for signup verification and invitations. |
+| `EMAIL_FROM` | Sender on a domain verified with Resend, for example `TalentGraph <noreply@example.com>`. |
+| `APP_BASE_URL` | Public HTTPS origin, without a trailing slash, used to build email links. |
+| `CRON_SECRET` | Random secret used to authorize Vercel's scheduled reminder request. |
+
+Vercel sets `VERCEL`; set `NODE_ENV=production` for the production environment so production security checks and email requirements are enabled. Do not commit these values or put secrets in `vercel.json`. The Supabase table must exist before the first request. On the first cold start with an empty `app_state` table, the app creates the initial app state and bootstrap HR account. It will not create the table automatically.
+
+Vercel Cron runs `/api/internal/reminders` daily at 09:00 UTC and authenticates with `CRON_SECRET`. The app no longer starts a timer in a Vercel function. Signup verification and invitations require working Resend configuration; without it, those production flows return an error rather than creating unusable accounts.
+
+Important production limit: this app currently loads the whole application state into each Node process and writes a complete snapshot to Supabase on mutations. Serverless instances can hold stale copies, and concurrent writes can overwrite one another. Supabase makes the snapshot durable, but does not make this snapshot model concurrency-safe. Treat this deployment as a demo or low-concurrency preview; before using real employee data or relying on concurrent users, replace snapshot persistence with transactional database operations and move rate limiting to a shared store. Review the remaining security and privacy limits below as well.
+
 ## Security and implementation limits
 
 - Passwords use salted `scrypt` hashes. Sessions use signed, HTTP-only, SameSite cookies; protected endpoints check roles and employee ownership.
 - Login, signup and invitation acceptance have per-process rate limits. These limits are not distributed across multiple app instances.
 - Email verification and invitations use expiring, hashed, single-use tokens. Real email delivery requires a configured provider.
 - Evidence submissions currently store a title, description and optional HTTPS link; binary file uploads and malware scanning are not implemented.
-- The JSON file remains the local demo source of truth. MySQL mode persists the application state in `app_state` and rebuilds the existing relational snapshot. This does not yet make every new workflow a first-class normalized SQL model, and MySQL mode needs environment-specific integration testing before deployment.
+- The JSON file remains the local demo source of truth. Supabase mode persists the application state as one `jsonb` row; application data is not yet modeled as normalized tables, and this mode needs integration testing against a configured Supabase project before deployment.
 - No MFA/SSO, external identity provider, distributed job queue, formal CSRF token scheme, or production-grade object storage is included. The hourly reminder loop is persisted-data-based but runs inside the application process; use a dedicated durable worker for multi-instance production.
 - Demo accounts and synthetic employee data are for local evaluation only. Review all security and privacy controls before using real employee data.
 
@@ -72,7 +99,7 @@ For production, also set `NODE_ENV=production`, a random `SESSION_SECRET` of at 
 
 The current ZIP builds on the existing project and preserves the existing UI styling and main pages. It adds employee-specific data access, a maximum of 100 unlinked seeded demo employees, approved-domain registration, email verification, employee invitations, evidence submission and review, in-app notifications, configurable evidence deadlines, reminders, and audit events. It also serializes persistence writes and enforces a strong session secret in production mode.
 
-Remaining production work: execute browser-based desktop/mobile regression tests, verify MySQL behavior against a real configured database, add binary evidence upload with safe object storage, move reminders to a durable worker/queue for multi-instance deployment, add CSRF protection and distributed rate limiting, and complete security review before real employee data is used.
+Remaining production work: execute browser-based desktop/mobile regression tests, verify Supabase behavior against a real configured project, add binary evidence upload with safe object storage, move reminders to a durable worker/queue for multi-instance deployment, add CSRF protection and distributed rate limiting, and complete security review before real employee data is used.
 
 ## Tests
 

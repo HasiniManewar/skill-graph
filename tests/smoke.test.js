@@ -25,7 +25,14 @@ test.before(async () => {
   for (let i = 0; i < 60; i++) { try { const r = await request(`${baseUrl}/api/session`); if (r.status === 200) { ready = true; break; } } catch {} await new Promise((resolve) => setTimeout(resolve, 100)); }
   assert.equal(ready, true, 'server should start');
 });
-test.after(() => { if (child) child.kill(); if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true }); });
+test.after(async () => {
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill();
+    await exited;
+  }
+  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+});
 test('retains at most 100 unlinked sample employees and account-linked profiles', () => {
   const state = JSON.parse(fs.readFileSync(path.join(tempDir, 'data/store.json'), 'utf8'));
   assert.ok(state.employees.filter((e) => !e.userId).length <= 100);
