@@ -57,7 +57,7 @@ For production, also set `NODE_ENV=production`, a random `SESSION_SECRET` of at 
 
 ## Deploy to Vercel
 
-Vercel auto-detects the root `server.js` Express app and serves files under `public/` from its CDN. `vercel.json` configures the daily reminder job. Vercel deployments must use Supabase; the local `data/store.json` fallback is intentionally disabled because Vercel function filesystems are not durable.
+`vercel.json` builds the root `server.js` as a Node function, routes requests through Express, and includes `public/` assets. It also configures the daily reminder job. Vercel deployments must use Supabase; the local `data/store.json` fallback is intentionally disabled because Vercel function filesystems are not durable. Vercel's warning that project build settings are ignored when `builds` is configured is expected.
 
 1. Create a Supabase project and run `database/supabase.sql` in its SQL Editor.
 2. Import this GitHub repository into Vercel. The project root is the repository root; no frontend build command is needed.
