@@ -645,6 +645,18 @@ async function processEvidenceReminders() {
 initialize().then(() => {
   processEvidenceReminders().catch((error) => console.error('Reminder processing failed:', error.message));
   const reminderTimer = setInterval(() => processEvidenceReminders().catch((error) => console.error('Reminder processing failed:', error.message)), 60 * 60 * 1000);
-  if (reminderTimer.unref) reminderTimer.unref();
-  app.listen(port, () => console.log(`Skill Graph running at http://localhost:${port} (${mysqlPool ? 'MySQL' : 'local demo'} mode)`));
-}).catch((error) => { console.error('Could not initialize application storage:', error.message); process.exitCode = 1; });
+ if (reminderTimer.unref) reminderTimer.unref();
+
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  app.listen(port, () =>
+    console.log(
+      `Skill Graph running at http://localhost:${port} (${mysqlPool ? 'MySQL' : 'local demo'} mode)`
+    )
+  );
+}
+}).catch((error) => {
+  console.error('Could not initialize application storage:', error.message);
+  process.exitCode = 1;
+});
